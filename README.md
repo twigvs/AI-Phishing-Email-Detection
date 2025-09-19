@@ -53,4 +53,4 @@ To avoid merge pain, either:
 - Ensure each person edits different notebooks.
 
 ## License
-This project is for assessment within Swinburne University of Technology, Australia. Contributors are 
+This project is for assessment within Swinburne University of Technology, Australia.
