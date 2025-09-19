@@ -4,18 +4,33 @@ from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
 
+
 # --- 1. LOAD AND PARSE DATA ---
 file_path = 'data/Phishing_validation_emails(1).csv'
 try:
     df = pd.read_csv(file_path)
     print("--- File loaded and data parsed ---\n")
+
+    # Remove empty rows
+    df = df.dropna()
+
+    # Separate ham and phishing emails
+    ham_email = df[df["label"] == 1]
+    phishing_email = df[df["label"] == 0]
+
+    # Balance the dataset
+    phishing_email = phishing_email.sample(ham_email.shape[0])
     
+    # Combine ham and phishing emails into a single dataframe
+    Data = pd.concat([ham_email, phishing_email], ignore_index = True)
+
     # Vectorize the email text
     vectorizer = CountVectorizer(stop_words='english')
-    X = vectorizer.fit_transform(df['Email Text'])
+    X = vectorizer.fit_transform(Data['Email Text'])
     
+
     # Prepare the labels (the target variable)
-    y = df['Email Type'].apply(lambda x: 1 if x == 'Phishing Email' else 0)
+    y = Data["label"]
 
     # --- 2. SPLIT DATA ---
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
