@@ -1,20 +1,29 @@
 
-# PhishGuard (RoBERTa Email Classifier)
+# Phishing Email Detection (RoBERTa Email Classifier)
 
-Team repo for ICT30016 Innovation Concept.
+Team Repo for ICT30016 Innovation Concept.
 
-## Quickstart
+A deep learning project that uses RoBERTa to classify emails as either phishing or legitimate.
+This repository is designed for collaboration and collation of the ML/DL model.
+
+## Setup
 ```bash
-# 1) Create and activate a virtual environment (Windows PowerShell)
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+# 1) Clone the Repo
 
-# 2) Install deps
+git clone https://github.com/twigvs/AI-Phishing-Email-Detection.git
+cd AI-Phishing-Email-Detection
+
+# 2) Create the Virtual Environment
+Please use Python 3.12, unfortunately 3.13 does not yeat support PyTorch
+
+python3.12 -m venv venv
+source venv/bin/activate    (if on MacOS or Linux)
+venv\Scripts\activate       (if on Windows)
+
+# 3) Install Dependencies
+
 pip install --upgrade pip
 pip install -r requirements.txt
-
-# 3) Run the baseline or RoBERTa training (see src/train.py)
-# (You will need a dataset CSV with 'text' and 'label' columns.)
 ```
 
 ## Repo layout
@@ -44,4 +53,4 @@ To avoid merge pain, either:
 - Ensure each person edits different notebooks.
 
 ## License
-MIT (or update as your team prefers).
+This project is for assessment within Swinburne University of Technology, Australia. Contributors are 
