@@ -1,0 +1,12 @@
+id,title,body,label
+1,You have been unenrolled from ICT30016,"Dear Student, our system has shown that you recently unenrolled into your course ICT30016. If this was an error please respond back with your full name, last name, address and student ID. Please respond immediately as there will be fees applied to students who try to enrol after today.",1
+2,Your package cannot be delivered.,"your package is bein processed and canot be delieverd due to the incorect infomation. please urgently respond to this Email andupdate your infomation within the next 24 hours to confirm delivery.",1
+3,Mastercard ending with XXXX has been charged,"Dear customer, your card has been charged with a total of $300.00. If this purchase was not made by you, please respond with an image of card details and last purchase. Payment will go through if no response received in the next 24 hours.",1
+4,Cloud Storage Payment DECLINED!,"Dear valued customer, your payment for cloud services has been declined. If you do not fulfill payment to upgrade your storage size, you risk deletion of your photos and videos. Please act now, we only hold onto your data for 2 days without payment!",1
+5,Suspicious action or sign-in notification,"Dear Ms, our technical team just detected a suspicious activity from your account. Please click the link to report your circumstances, if it weren't you",1
+6,Meeting reminder,"Hi team, just a reminder that our project meeting will take place tomorrow at 10am in room 301. Please bring your progress reports.",0
+7,Weekly newsletter,"Welcome to this week's company newsletter! We cover updates on projects, upcoming events, and staff highlights.",0
+8,Your order has been shipped,"Good news! Your order #12345 has been shipped and is on its way. Track your package using the link below.",0
+9,Leave request approved,"Dear John, your annual leave request for 5–12 July has been approved. Have a safe and enjoyable holiday!",0
+10,Upcoming training session,"Reminder: You are enrolled in the cybersecurity awareness training scheduled for next Monday. Please confirm attendance.",0
+
