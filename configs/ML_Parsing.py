@@ -41,7 +41,7 @@ try:
     Hi team, just a reminder that our project meeting will take place tomorrow at 10am in room 301. Please bring your progress reports..
     """
 
-    # Transform the new email using the SAME vectorizer
+    # Transform the new email using the SAME vectorizer ....
     new_email_transformed = vectorizer.transform([new_email])
 
     # Make a prediction
