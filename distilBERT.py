@@ -220,9 +220,6 @@ import matplotlib.pyplot as plt
 from collections import defaultdict
 
 
-
-import matplotlib.pyplot as plt
-
 logs = trainer.state.log_history
 
 # train loss by STEP
