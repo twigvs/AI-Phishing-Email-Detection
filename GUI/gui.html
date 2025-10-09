@@ -1,12 +1,43 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Background Example</title>
-  <link rel="stylesheet" href="styles.css">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Phishing Detector (RoBERTa)</title>
+  <link rel="stylesheet" href="gui.css">
 </head>
 <body>
-  <h1>Hello, world!</h1>
+  <h1>Phishing Detector <span class="badge">RoBERTa</span></h1>
+  <div class="sub">Paste an email (subject + body) to get a phishing risk verdict.</div>
+
+  <div class="card">
+    <label for="emailtext">Email text</label>
+    <textarea id="emailtext" placeholder="[Subject] ...&#10;&#10;[Body] ..."></textarea>
+
+    <div class="grid" style="margin-top:.75rem">
+      <div>
+        <label>Threshold: <span id="threshLabel" class="mono"></span></label>
+        <input id="thresh" class="slider" type="range" min="0" max="100" />
+      </div>
+      <div class="muted">Higher threshold → fewer false alarms, lower threshold → more sensitive.</div>
+    </div>
+
+    <div class="row">
+      <button id="detectBtn">Detect</button>
+      <div id="status" class="muted"></div>
+    </div>
+
+    <div id="result" class="result" style="display:none"></div>
+  </div>
+
+  <p class="muted" style="margin-top:1rem">
+    This tool is for awareness and triage only—always apply organizational policy before acting.
+  </p>
+
+  <script>
+    // Initial threshold from server
+    const serverThreshold = {{ threshold }};
+  </script>
+  <script src="/static/app.js"></script>
 </body>
 </html>
