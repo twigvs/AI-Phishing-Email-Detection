@@ -1,5 +1,5 @@
 # pip install torch pandas scikit-learn
-import argparse, json, re, math, os, random
+import argparse, json, re, os, random
 import pandas as pd
 import numpy as np
 import torch
@@ -19,14 +19,14 @@ def simple_tokenize(text: str):
     return [t for t in re.split(r"\W+", text) if t]
 
 def read_csv(path):
-    df = pd.read_csv(path)
+    df = pd.read_csv(path, encoding="latin1")
     if "body" not in df.columns or "label" not in df.columns:
         raise ValueError("CSV must contain columns: 'body' and 'label'")
     df = df[["body", "label"]].dropna()
     return df
 
 def build_label_map(series):
-    # map any non-numeric labels to ints; keep existing 0/1 if already numeric
+    """Map labels (numeric or string) to contiguous ints with stable ordering."""
     if pd.api.types.is_numeric_dtype(series):
         uniq = sorted(series.astype(int).unique().tolist())
     else:
@@ -34,8 +34,10 @@ def build_label_map(series):
     return {lbl: i for i, lbl in enumerate(uniq)}
 
 def encode_labels(series, label2id):
-    return series.map(lambda x: label2id[int(x)] if (isinstance(x, (int, np.integer)) and int(x) in label2id)
-                      else label2id[str(x)])
+    return series.map(
+        lambda x: label2id[int(x)] if (isinstance(x, (int, np.integer)) and int(x) in label2id)
+        else label2id[str(x)]
+    )
 
 def build_vocab(texts, min_freq=2, max_size=50000):
     PAD, UNK = "<pad>", "<unk>"
@@ -60,6 +62,39 @@ def encode_text(text, vocab, max_len):
         ids += [PAD_ID] * (max_len - len(ids))
     return ids
 
+# ----- label normalization to handle 0/1 vs strings like "legitimate"/"phishing"
+def normalize_label_value(v):
+    """
+    Map common variants to canonical strings:
+    - phishing class   -> "phishing"
+    - legitimate class -> "legitimate"
+    Works with ints (0/1), numeric-like strings, booleans, and common synonyms.
+    """
+    if isinstance(v, (int, np.integer, float, np.floating)):
+        return "phishing" if int(v) != 0 else "legitimate"
+
+    s = str(v).strip().lower()
+    # phishing-like
+    if s in {"phish", "phishing", "spam", "malicious", "fraud", "scam", "bad"}:
+        return "phishing"
+    # legitimate-like
+    if s in {"legit", "legitimate", "ham", "benign", "clean", "safe", "good"}:
+        return "legitimate"
+
+    if s in {"1", "true", "yes"}:
+        return "phishing"
+    if s in {"0", "false", "no"}:
+        return "legitimate"
+
+    # fallback to the raw string; build_label_map will still handle it
+    return s
+
+def normalize_label_series(series: pd.Series) -> pd.Series:
+    return series.apply(normalize_label_value)
+
+# ------------------------
+# Dataset
+# ------------------------
 class TextDataset(Dataset):
     def __init__(self, df, vocab, label2id, max_len):
         self.vocab = vocab
@@ -76,7 +111,7 @@ class TextDataset(Dataset):
         return x, y
 
 # ------------------------
-# Simple DL model: Embed -> mean pool -> MLP -> logits
+# Model: Embed -> mean pool -> MLP -> logits
 # ------------------------
 class SimpleTextClassifier(nn.Module):
     def __init__(self, vocab_size, emb_dim=128, n_classes=2, dropout=0.2):
@@ -153,35 +188,37 @@ def main():
     print(f"Device: {device}")
 
     # --- Load data ---
-    train_df = read_csv("data/emails.csv")
-    test_df  = read_csv("data/samples.csv")
+    train_df = read_csv(args.train_csv)
+    test_df  = read_csv(args.test_csv)
 
-    # --- Labels ---
-    label2id = build_label_map(train_df["label"])
+    # --- Normalize labels on BOTH datasets (handles 0/1 vs strings like 'legitimate'/'phishing') ---
+    train_df["label"] = normalize_label_series(train_df["label"])
+    test_df["label"]  = normalize_label_series(test_df["label"])
+
+    # --- Build label map from the UNION of labels (train + test) ---
+    all_labels = pd.concat([train_df["label"], test_df["label"]], axis=0)
+    label2id = build_label_map(all_labels)
     id2label = {v: k for k, v in label2id.items()}
     n_classes = len(label2id)
-    print(f"Labels (train): {label2id}")
+    print(f"Labels (global): {label2id}")
 
     # --- Vocab from TRAIN ONLY ---
     vocab = build_vocab(train_df["body"].tolist(), min_freq=args.min_freq)
     print(f"Vocab size: {len(vocab)}")
 
-    # --- Datasets ---
+    # --- Datasets & loaders ---
     train_ds = TextDataset(train_df, vocab, label2id, max_len=args.max_len)
     test_ds  = TextDataset(test_df,  vocab, label2id, max_len=args.max_len)
-
-    train_ld = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0)
+    train_ld = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,  num_workers=0)
     test_ld  = DataLoader(test_ds,  batch_size=args.batch_size, shuffle=False, num_workers=0)
 
-    # --- Model ---
+    # --- Model / loss / optim ---
     model = SimpleTextClassifier(
         vocab_size=len(vocab),
         emb_dim=args.emb_dim,
         n_classes=n_classes,
         dropout=0.2
     ).to(device)
-
-    # Loss: CE handles binary & multi-class
     criterion = nn.CrossEntropyLoss()
     optim = torch.optim.Adam(model.parameters(), lr=args.lr)
 
@@ -204,15 +241,9 @@ def main():
 
     with open(os.path.join(args.out_dir, "vocab.json"), "w", encoding="utf-8") as f:
         json.dump(vocab, f, ensure_ascii=False)
-
     with open(os.path.join(args.out_dir, "labels.json"), "w", encoding="utf-8") as f:
         json.dump({str(k): int(v) if isinstance(v, (int, np.integer)) else v for k, v in label2id.items()}, f)
-
-    meta = {
-        "max_len": args.max_len,
-        "emb_dim": args.emb_dim,
-        "min_freq": args.min_freq
-    }
+    meta = {"max_len": args.max_len, "emb_dim": args.emb_dim, "min_freq": args.min_freq}
     with open(os.path.join(args.out_dir, "meta.json"), "w") as f:
         json.dump(meta, f)
 
