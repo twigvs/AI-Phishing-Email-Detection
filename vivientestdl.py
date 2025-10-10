@@ -137,8 +137,8 @@ def evaluate(model, loader, device, label_names):
 # ------------------------
 def main():
     ap = argparse.ArgumentParser(description="Train on one CSV and test on another (body,label).")
-    ap.add_argument("--train_csv", required=True)
-    ap.add_argument("--test_csv", required=True)
+    ap.add_argument("--train_csv", required=True, help="Path to training CSV (with body,label)")
+    ap.add_argument("--test_csv",  required=True, help="Path to test CSV (with body,label)")
     ap.add_argument("--out_dir", default="model_out")
     ap.add_argument("--epochs", type=int, default=5)
     ap.add_argument("--batch_size", type=int, default=64)
@@ -153,8 +153,8 @@ def main():
     print(f"Device: {device}")
 
     # --- Load data ---
-    train_df = read_csv(args.train_csv)
-    test_df  = read_csv(args.test_csv)
+    train_df = read_csv("data/emails.csv")
+    test_df  = read_csv("data/samples.csv")
 
     # --- Labels ---
     label2id = build_label_map(train_df["label"])
