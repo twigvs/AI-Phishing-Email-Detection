@@ -1,0 +1,28 @@
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data & models (large)
+data/raw/
+data/raw/*
+!data/emails.csv
+data/processed/*.parquet
+out/
+*.ckpt
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+data/phishing_email.csv 

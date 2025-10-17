@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Phishing Detector (RoBERTa)</title>
+
+  <!-- Styles -->
+  <link rel="stylesheet" href="gui.css">
+</head>
+<body>
+  <div class="page">
+    <h1>Phishing Detector <span class="badge">RoBERTa</span></h1>
+    <p class="sub">Paste an email (subject + body) or upload a CSV of messages to get a phishing risk verdict.</p>
+
+    <div class="card">
+      <!-- Email textarea -->
+      <label for="emailtext">Email text</label>
+      <textarea id="emailtext" placeholder="[Subject] ...&#10;&#10;[Body] ..."></textarea>
+
+      <!-- Threshold controls -->
+      <div class="grid" style="margin-top:.75rem">
+        <div>
+          <label for="thresh">Threshold: <span id="threshLabel" class="mono"></span></label>
+          <!-- If you want to pass the server value without inline JS, set data-server-threshold below -->
+          <input id="thresh" class="slider" type="range" min="0" max="100" value="50" data-server-threshold="50" />
+        </div>
+        <div class="muted">Higher threshold → fewer false alarms, lower threshold → more sensitive.</div>
+      </div>
+
+      <!-- Actions -->
+      <div class="row">
+        <button id="detectBtn" type="button">Detect</button>
+        <div id="status" class="muted" aria-live="polite"></div>
+      </div>
+
+      <!-- Results -->
+      <div id="result" class="result" style="display:none"></div>
+
+      <!-- CSV Dropzone -->
+      <div class="dropzone" id="csvDrop" role="button" tabindex="0" aria-label="Upload CSV by dropping or browsing">
+        <div>
+          <strong>Drop your CSV file here</strong>
+          <div class="hint">or <label for="csvInput" class="choose">browse</label></div>
+        </div>
+        <input id="csvInput" type="file" accept=".csv,text/csv" />
+      </div>
+    </div>
+
+    <p class="muted" style="margin-top:1rem">
+      This tool is for awareness and triage only—always apply organizational policy before acting.
+    </p>
+  </div>
+
+  <!-- If you’re using a template engine, you can safely inject the threshold like this:
+  <script>
+    const serverThreshold = {{ (threshold | default(50, true)) | tojson }};
+    document.addEventListener('DOMContentLoaded', () => {
+      const el = document.getElementById('thresh');
+      if (el && typeof serverThreshold === 'number') {
+        el.value = serverThreshold;
+        el.dataset.serverThreshold = String(serverThreshold);
+      }
+    });
+  </script>
+  -->
+
+  <!-- Your app logic (model calls, detect button handler, etc.) -->
+  <!-- Update the path if yours is different -->
+
+  <!-- Your GUI helpers (CSV dropzone, threshold label wiring, etc.) -->
+  <!-- If gui.js lives next to this HTML file, change to src="gui.js" -->
+  <script src="gui.js" defer></script>
+
+  <noscript>
+    <p style="color:#fff; background:#c00; padding:.5rem; border-radius:.5rem; max-width:960px; margin:1rem auto;">
+      JavaScript is required for this page to function.
+    </p>
+  </noscript>
+</body>
+</html>

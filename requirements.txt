@@ -1,0 +1,14 @@
+
+torch
+transformers
+datasets
+scikit-learn
+pandas
+numpy
+matplotlib
+jupytext
+black
+isort
+flake8
+pytest
+flask

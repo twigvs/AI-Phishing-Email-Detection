@@ -1,0 +1,174 @@
+/* =============== THEME =============== */
+:root{
+  --bg-blur: 14px;
+  --glass: rgba(255,255,255,.08);
+  --glass-stroke: rgba(255,255,255,.25);
+  --shadow: 0 10px 30px rgba(0,0,0,.25);
+  --text: #f5f7fb;
+  --muted: #aab0bd;
+  --brand: #6ee7f0;
+  --brand-2: #7c5cff;
+  --danger: #ffb0a3;
+  --safe: #a7f3d0;
+  --radius: 14px;
+}
+
+/* =============== PAGE =============== */
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  color: var(--text);
+  background: #06080f url(images/3d-programming-background-with-abstract-binary-code.jpg) center/cover no-repeat fixed;
+  /* subtle gradient veil for contrast */
+  position: relative;
+}
+body::before{
+  content:"";
+  position: fixed; inset: 0;
+  background:
+    radial-gradient(1200px 600px at 10% -10%, rgba(124,92,255,.35), transparent 60%),
+    radial-gradient(900px 600px at 120% 120%, rgba(110,231,240,.30), transparent 55%),
+    linear-gradient(to bottom, rgba(0,0,0,.40), rgba(0,0,0,.55));
+  pointer-events:none;
+}
+
+.page {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 2.5rem 1.25rem 4rem;
+}
+
+/* =============== TYPOGRAPHY =============== */
+h1 {
+  margin: 0 0 .5rem;
+  letter-spacing: .3px;
+  font-size: clamp(1.6rem, 1.2rem + 1.2vw, 2.1rem);
+  display:flex; align-items:center; gap:.6rem;
+}
+.sub { color: #f5f7fb;}
+
+/* badge */
+.badge {
+  background: linear-gradient(90deg, var(--brand-2), var(--brand));
+  color: #0b0d14;
+  border-radius: 999px;
+  padding: .28rem .6rem;
+  font-weight: 700;
+  font-size: .8rem;
+}
+
+/* =============== CARD / GLASS =============== */
+.card {
+  background: var(--glass);
+  border: 1px solid var(--glass-stroke);
+  border-radius: var(--radius);
+  padding: 1.25rem;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(var(--bg-blur));
+}
+
+/* =============== INPUTS =============== */
+label { display:block; margin-bottom: .4rem; color: var(--muted); }
+textarea {
+  width: 100%;
+  min-height: 170px;
+  resize: vertical;
+  padding: .9rem 1rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.18);
+  background: rgba(255,255,255,.06);
+  color: var(--text);
+  outline: none;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+textarea:focus-visible{
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px rgba(110,231,240,.25);
+}
+
+/* slider */
+.slider { width: 100%; accent-color: var(--brand-2); }
+
+/* helper layout */
+.row {
+  display: flex; flex-wrap: wrap;
+  gap: .75rem; align-items: center; margin-top: .8rem;
+}
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: .9rem;
+}
+@media (max-width: 720px){
+  .grid { grid-template-columns: 1fr; }
+}
+
+/* =============== BUTTONS =============== */
+button, .btn {
+  padding: .7rem 1.05rem;
+  border: 0; border-radius: 12px;
+  cursor: pointer; color: #0b0d14;
+  font-weight: 700;
+  transition: transform .08s ease, box-shadow .2s ease, background .2s ease;
+  background: linear-gradient(180deg, var(--brand), #6365e3);
+  box-shadow: 0 6px 18px rgba(110,231,240,.25);
+}
+button:hover { transform: translateY(-1px); }
+button:active { transform: translateY(0); }
+.btn-ghost{
+  background: rgba(255,255,255,.08);
+  color: var(--text);
+  box-shadow: none; border: 1px solid rgba(255,255,255,.18);
+}
+
+/* =============== RESULTS =============== */
+.result {
+  margin-top: 1rem; padding: 1rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.18);
+  background: rgba(255,255,255,.04);
+}
+.safe  { background: rgba(22,163,74,.12); border-color: rgba(22,163,74,.35); }
+.phish { background: rgba(239,68,68,.12); border-color: rgba(239,68,68,.35); }
+
+/* util */
+.mono  { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.muted { color: var(--muted); font-size: .95rem; }
+
+/* =============== DROPZONE (CSV upload) =============== */
+.dropzone {
+  margin-top: 1rem;
+  border: 2px dashed rgba(255,255,255,.35);
+  border-radius: 12px;
+  background: rgba(255,255,255,.05);
+  padding: 1.1rem;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  gap: .45rem;
+  transition: border-color .15s ease, background .15s ease, box-shadow .15s ease;
+}
+.dropzone strong { color: rgba(255,255,255,.10); }
+.dropzone .hint { color: var(--muted); font-size: .9rem; }
+.dropzone input[type="file"] {
+  display: none; /* hidden; label triggers it */
+}
+.dropzone .choose{
+  display:inline-block; margin-top:.25rem;
+  padding:.45rem .8rem; border-radius: 10px;
+  background: rgba(255,255,255,.10);
+  border: 1px solid rgba(255,255,255,.18);
+  color: var(--text);
+  cursor: pointer; font-weight: 600;
+}
+.dropzone.dragover{
+  background: rgba(110,231,240,.10);
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px rgba(110,231,240,.18) inset;
+}
+
+/* small status text beside Detect */
+#status { min-height: 1.2em; }
