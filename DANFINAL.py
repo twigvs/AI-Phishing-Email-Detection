@@ -71,7 +71,7 @@ _OBFUSC_EMAIL_RE = re.compile(
     re.IGNORECASE
 )
 
-# Reply splitters (no inline (?i) flags inside; compile with IGNORECASE|MULTILINE)
+# Reply splitters (compile flags on compile, not inline)
 _REPLY_SPLITTERS = [
     r'^>+ .*',
     r'^On .+ wrote:\s*$',
@@ -223,7 +223,7 @@ class DanClassifier(nn.Module):
         return logits
 
 # ================================================================
-# Train / Eval
+# Train / Eval helpers
 # ================================================================
 def train_one_epoch(model, loader, criterion, optim, device, scheduler=None, grad_clip=1.0):
     model.train()
@@ -253,20 +253,53 @@ def evaluate(model, loader, device, label_names) -> Tuple[float, str, float]:
         ys.extend(y.cpu().numpy().tolist())
         ps.extend(preds.cpu().numpy().tolist())
     acc = (np.array(ys) == np.array(ps)).mean()
-    # if "phishing" exists, use it as positive; else default to class 1
     pos_index = label_names.index("phishing") if "phishing" in label_names else 1
     f1 = f1_score(ys, ps, average="binary", pos_label=pos_index, zero_division=0)
     report = classification_report(ys, ps, target_names=label_names, digits=3, zero_division=0)
     return acc, report, f1
 
 # ================================================================
+# Artifact loading (for test_only)
+# ================================================================
+def load_artifacts(out_dir: str, device: torch.device, vocab_only=False):
+    vpath = os.path.join(out_dir, "vocab.json")
+    lpath = os.path.join(out_dir, "labels.json")
+    mpath = os.path.join(out_dir, "meta.json")
+    wpath = os.path.join(out_dir, "model.pt")
+    if not all(os.path.exists(p) for p in [vpath, lpath, mpath, wpath] if not vocab_only):
+        # allow model-less load when vocab_only=False would fail
+        pass
+    with open(vpath, "r", encoding="utf-8") as f:
+        vocab = json.load(f)
+    with open(lpath, "r", encoding="utf-8") as f:
+        label2id = json.load(f)
+        # ensure keys are strings
+        label2id = {str(k): int(v) for k, v in label2id.items()}
+    with open(mpath, "r", encoding="utf-8") as f:
+        meta = json.load(f)
+    model = DanClassifier(
+        vocab_size=len(vocab),
+        emb_dim=meta.get("emb_dim", 256),
+        n_classes=len(label2id),
+        dropout=0.3,
+        feat_dim=5
+    ).to(device)
+    model.load_state_dict(torch.load(wpath, map_location=device))
+    model.eval()
+    return vocab, label2id, meta, model
+
+# ================================================================
 # Main
 # ================================================================
 def main():
     ap = argparse.ArgumentParser(description="DAN DL (phishing vs non-phishing) with cleaned CSV export.")
-    ap.add_argument("--train_csv", required=True)
-    ap.add_argument("--test_csv", required=True)
-    ap.add_argument("--out_dir", default="model_out_dan")
+    # modes
+    ap.add_argument("--test_only", action="store_true", help="Only evaluate using existing model in --out_dir.")
+    # common
+    ap.add_argument("--test_csv", help="CSV with body,label for testing")
+    ap.add_argument("--out_dir", default="model_out")
+    # training options (ignored if --test_only)
+    ap.add_argument("--train_csv", help="CSV with body,label for training")
     ap.add_argument("--epochs", type=int, default=20)
     ap.add_argument("--batch_size", type=int, default=64)
     ap.add_argument("--lr", type=float, default=1e-3)
@@ -283,7 +316,62 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
-    # --- Load & clean ---
+    # ----------------- TEST ONLY MODE -----------------
+    if args.test_only:
+        if not args.test_csv:
+            raise ValueError("--test_only requires --test_csv and --out_dir pointing to an existing model folder.")
+        # Load artifacts
+        vocab, label2id, meta, model = load_artifacts(args.out_dir, device)
+        id2label = {v: k for k, v in label2id.items()}
+        label_names = [id2label[i] for i in range(len(id2label))]
+        max_len = meta.get("max_len", 400)
+        remove_sw = meta.get("remove_stopwords", False)
+        stem = meta.get("stem_tokens", False)
+
+        # Load + clean test
+        raw_test = read_csv(args.test_csv)
+        test_df = raw_test.copy()
+        test_df["body"] = test_df["body"].apply(lambda s: clean_text(s, remove_stopwords=remove_sw, stem=stem))
+        test_df["label"] = normalize_label_series(test_df["label"])
+
+        # Save cleaned test for inspection
+        clean_test_path  = os.path.join(args.out_dir, "test_clean.csv")
+        test_df[["body","label"]].to_csv(clean_test_path, index=False, encoding="utf-8")
+        print(f"Saved cleaned test CSV:\n  {clean_test_path}")
+
+        # Build dataset/loader
+        test_ds  = TextDataset(test_df, vocab, label2id, max_len=max_len)
+        test_ld  = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
+
+        # Evaluate
+        test_acc, test_report, test_f1 = evaluate(model, test_ld, device, label_names)
+        print("\n=== Test report ===")
+        print(test_report)
+        print(f"Test accuracy: {test_acc:.3f} | Test F1: {test_f1:.3f}")
+
+        # Save predictions
+        preds_path = os.path.join(args.out_dir, "test_predictions.csv")
+        ys, ps = [], []
+        with torch.no_grad():
+            for (x_ids, feats), y in test_ld:
+                x_ids, feats = x_ids.to(device), feats.to(device)
+                logits = model(x_ids, feats)
+                ps.extend(logits.argmax(1).cpu().numpy().tolist())
+                ys.extend(y.numpy().tolist())
+        inv = {i: label_names[i] for i in range(len(label_names))}
+        df_out = test_df.copy().reset_index(drop=True)
+        df_out["gold"] = [inv[i] for i in encode_labels(test_df["label"], label2id)]
+        df_out["pred"] = [inv[i] for i in ps]
+        df_out.to_csv(preds_path, index=False, encoding="utf-8")
+        print(f"Saved predictions to: {preds_path}")
+        print(f"Artifacts read from: {args.out_dir}")
+        return
+
+    # ----------------- TRAIN + TEST MODE -----------------
+    if not args.train_csv or not args.test_csv:
+        raise ValueError("Training mode requires --train_csv and --test_csv.")
+
+    # Load & clean
     raw_train = read_csv(args.train_csv)
     raw_test  = read_csv(args.test_csv)
 
@@ -301,25 +389,25 @@ def main():
     train_df["label"] = normalize_label_series(train_df["label"])
     test_df["label"]  = normalize_label_series(test_df["label"])
 
-    # Save cleaned CSVs so you can inspect
+    # Save cleaned CSVs
     clean_train_path = os.path.join(args.out_dir, "train_clean.csv")
     clean_test_path  = os.path.join(args.out_dir, "test_clean.csv")
     train_df[["body","label"]].to_csv(clean_train_path, index=False, encoding="utf-8")
     test_df[["body","label"]].to_csv(clean_test_path,  index=False, encoding="utf-8")
     print(f"Saved cleaned CSVs:\n  {clean_train_path}\n  {clean_test_path}")
 
-    # Label maps (union)
+    # Labels
     all_labels = pd.concat([train_df["label"], test_df["label"]], axis=0)
     label2id = build_label_map(all_labels)
     id2label = {v:k for k,v in label2id.items()}
+    label_names = [id2label[i] for i in range(len(id2label))]
     n_classes = len(label2id)
-    label_names = [id2label[i] for i in range(n_classes)]
     print(f"Labels: {label2id}")
 
-    # Stratified train/val
+    # Split
     train_df, val_df = train_test_split(train_df, test_size=0.2, stratify=train_df["label"], random_state=SEED)
 
-    # Vocab from TRAIN ONLY
+    # Vocab
     vocab = build_vocab(train_df["body"].tolist(), min_freq=args.min_freq)
     print(f"Vocab size: {len(vocab)}")
 
@@ -328,7 +416,6 @@ def main():
     val_ds   = TextDataset(val_df,   vocab, label2id, max_len=args.max_len)
     test_ds  = TextDataset(test_df,  vocab, label2id, max_len=args.max_len)
 
-    # Weighted sampler for imbalance
     counts = train_df["label"].value_counts().to_dict()
     sample_weights = [1.0 / counts[lbl] for lbl in train_df["label"].tolist()]
     sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
@@ -337,26 +424,26 @@ def main():
     val_ld   = DataLoader(val_ds,   batch_size=args.batch_size, shuffle=False, num_workers=0)
     test_ld  = DataLoader(test_ds,  batch_size=args.batch_size, shuffle=False, num_workers=0)
 
-    # Class weights in loss
     cls_weights = torch.tensor([1.0 / counts[id2label[i]] for i in range(n_classes)], dtype=torch.float, device=device)
 
     model = DanClassifier(len(vocab), emb_dim=args.emb_dim, n_classes=n_classes, dropout=0.3, feat_dim=5).to(device)
     criterion = nn.CrossEntropyLoss(weight=cls_weights)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
-    # OneCycle LR (smooth warmup/cooldown)
-    steps_per_epoch = max(1, len(train_ld))
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer, max_lr=args.lr, steps_per_epoch=steps_per_epoch, epochs=args.epochs
-    )
+    # Scheduler only if epochs >= 1 (avoids your OneCycle error)
+    scheduler = None
+    if args.epochs >= 1:
+        steps_per_epoch = max(1, len(train_ld))
+        scheduler = torch.optim.lr_scheduler.OneCycleLR(
+            optimizer, max_lr=args.lr, steps_per_epoch=steps_per_epoch, epochs=args.epochs
+        )
 
-    # Train w/ early stopping on val F1
+    # Train with early stopping on val F1
     best_f1, bad, patience = 0.0, 0, args.patience
     for ep in range(1, args.epochs + 1):
         tr_loss, tr_acc = train_one_epoch(model, train_ld, criterion, optimizer, device, scheduler=scheduler, grad_clip=1.0)
         val_acc, _, val_f1 = evaluate(model, val_ld, device, label_names)
         print(f"Epoch {ep:02d} | train_loss={tr_loss:.4f} acc={tr_acc:.3f} | val_acc={val_acc:.3f} f1={val_f1:.3f}")
-
         if val_f1 >= best_f1:
             best_f1, bad = val_f1, 0
             torch.save(model.state_dict(), os.path.join(args.out_dir, "model.pt"))
@@ -373,9 +460,8 @@ def main():
     print(test_report)
     print(f"Test accuracy: {test_acc:.3f} | Test F1: {test_f1:.3f}")
 
-    # Save predictions CSV for inspection
+    # Save predictions + artifacts
     preds_path = os.path.join(args.out_dir, "test_predictions.csv")
-    model.eval()
     ys, ps = [], []
     with torch.no_grad():
         for (x_ids, feats), y in test_ld:
@@ -390,7 +476,6 @@ def main():
     df_out.to_csv(preds_path, index=False, encoding="utf-8")
     print(f"Saved predictions to: {preds_path}")
 
-    # Save artifacts
     with open(os.path.join(args.out_dir, "vocab.json"), "w", encoding="utf-8") as f:
         json.dump(vocab, f, ensure_ascii=False)
     with open(os.path.join(args.out_dir, "labels.json"), "w", encoding="utf-8") as f:
