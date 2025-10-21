@@ -41,7 +41,6 @@ def build_vocab(texts, min_freq=2, max_size=50000):
     for txt in texts:
         for tok in simple_tokenize(txt):
             freq[tok] = freq.get(tok, 0) + 1
-    # sort by freq then alpha for stability
     items = sorted([(t, c) for t, c in freq.items() if c >= min_freq], key=lambda x: (-x[1], x[0]))
     items = items[: max(0, max_size - 2)]
     vocab = {PAD: 0, UNK: 1}
@@ -53,7 +52,6 @@ def encode_text(text, vocab, max_len):
     PAD_ID, UNK_ID = 0, 1
     toks = simple_tokenize(text)[:max_len]
     ids = [vocab.get(t, UNK_ID) for t in toks]
-    # pad
     if len(ids) < max_len:
         ids += [PAD_ID] * (max_len - len(ids))
     return ids
@@ -68,45 +66,45 @@ def normalize_label_value(v):
     """
     if isinstance(v, (int, np.integer, float, np.floating)):
         return "phishing" if int(v) != 0 else "legitimate"
-
     s = str(v).strip().lower()
-    # phishing-like
     if s in {"phish", "phishing", "spam", "malicious", "fraud", "scam", "bad"}:
         return "phishing"
-    # legitimate-like
     if s in {"legit", "legitimate", "ham", "benign", "clean", "safe", "good"}:
         return "legitimate"
-
-    if s in {"1", "true", "yes"}:
-        return "phishing"
-    if s in {"0", "false", "no"}:
-        return "legitimate"
-
-    # fallback to the raw string; build_label_map will still handle it
+    if s in {"1", "true", "yes"}:  return "phishing"
+    if s in {"0", "false", "no"}:  return "legitimate"
     return s
 
 def normalize_label_series(series: pd.Series) -> pd.Series:
     return series.apply(normalize_label_value)
 
 # =================================================================
-# >>>>>>>>>>>>>>>>>>>>>>>  CLEANING LAYER  <<<<<<<<<<<<<<<<<<<<<<<<<
-# This block does all the input cleaning/normalisation.
-# It:
-#  - normalises Unicode & strips HTML
-#  - de-obfuscates phishing tricks (hxxp, [.] , (dot), [@], " at ")
-#  - masks URLs/emails/phones/money/numbers with placeholders
-#  - trims reply/forward boilerplate & quoted lines
-#  - collapses whitespace & caps character repeats
-#  - (optional) removes a few stopwords and applies a tiny stemmer
+# >>>>>>>>>>>>>>>>>>>>>>>  CLEANING LAYER  (revised) <<<<<<<<<<<<<<
+# Conservative by default; aggressive options are OFF unless passed.
+# Reconstructs spaced/obfuscated emails before masking.
 # =================================================================
+
+# Looser detectors (post-reconstruction we use strict masking)
 _URL_RE   = re.compile(r'\b((?:https?://|www\.)\S+)\b', re.IGNORECASE)
-_EMAIL_RE = re.compile(r'\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b')
+_EMAIL_MASK_RE = re.compile(r'\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b')
 _PHONE_RE = re.compile(r'\b(?:\+?\d{1,3}[\s-]?)?(?:\(?\d{2,4}\)?[\s-]?){2,4}\d{2,4}\b')
 _MONEY_RE = re.compile(r'(?:(?<=\s)|^)(?:[\$£€]\s?\d[\d,]*(?:\.\d+)?|\d[\d,]*(?:\.\d+)?\s?(?:usd|aud|eur|gbp))(?=\s|$)', re.IGNORECASE)
 _NUM_RE   = re.compile(r'\b\d+(?:[\.,]\d+)?\b')
 
+# Email obfuscation pieces
+_AT_VARIANTS  = r'(?:@|\(at\)|\[at\]|\s+@\s+|\s*\(at\)\s*|\s*\[at\]\s*)'
+_DOT_VARIANTS = r'(?:\.|\(dot\)|\[dot\]|\s*\.\s*|\s*\(dot\)\s*|\s*\[dot\]\s*|\s+dot\s+)'
+
+# Reconstruct things like: name @ domain . tld  OR  name(at)domain(dot)tld
+_OBFUSC_EMAIL_RE = re.compile(
+    r'\b([A-Za-z0-9._%+-]+)\s*' + _AT_VARIANTS + r'\s*' +
+    r'([A-Za-z0-9-]+(?:\s*' + _DOT_VARIANTS + r'\s*[A-Za-z0-9-]+)*)'
+    r'\b',
+    re.IGNORECASE
+)
+
 _REPLY_SPLITTERS = [
-    r'^>+ .*',  # quoted lines
+    r'^>+ .*',
     r'^On .+ wrote:\s*$',
     r'^-{2,}\s*Original Message\s*-{2,}\s*$',
     r'^From:\s.*$',
@@ -123,8 +121,7 @@ _STOPWORDS = {
 
 def _normalize_unicode(s: str) -> str:
     s = unicodedata.normalize("NFKC", s)
-    s = ''.join(ch for ch in s if (ch.isprintable() or ch in '\n\t '))
-    return s
+    return ''.join(ch for ch in s if (ch.isprintable() or ch in '\n\t '))
 
 def _strip_html_tags(s: str) -> str:
     s = html.unescape(s)
@@ -132,15 +129,21 @@ def _strip_html_tags(s: str) -> str:
     s = re.sub(r'<[^>]+>', ' ', s)
     return s
 
-def _deobfuscate(s: str) -> str:
-    s = re.sub(r'hx{2}p', 'http', s, flags=re.IGNORECASE)
-    s = re.sub(r'\[\.\]|\(dot\)|\s+dot\s+', '.', s, flags=re.IGNORECASE)
-    s = re.sub(r'\[@\]|\s+at\s+', '@', s, flags=re.IGNORECASE)
-    return s
+def _reconstruct_obfuscated_emails(s: str) -> str:
+    def _normalize_domain(dom: str) -> str:
+        parts = re.split(_DOT_VARIANTS, dom)
+        parts = [p.strip().strip('.- ') for p in parts if p.strip()]
+        return '.'.join(parts)
+    def _sub(m: re.Match) -> str:
+        local = m.group(1)
+        domain = _normalize_domain(m.group(2))
+        return f'{local}@{domain}'
+    return _OBFUSC_EMAIL_RE.sub(_sub, s)
 
 def _mask_patterns(s: str) -> str:
+    s = _reconstruct_obfuscated_emails(s)
     s = _URL_RE.sub(' <url> ', s)
-    s = _EMAIL_RE.sub(' <email> ', s)
+    s = _EMAIL_MASK_RE.sub(' <email> ', s)
     s = _MONEY_RE.sub(' <money> ', s)
     s = _PHONE_RE.sub(' <phone> ', s)
     s = _NUM_RE.sub(' <number> ', s)
@@ -150,35 +153,19 @@ def _strip_reply_blocks(s: str) -> str:
     m = _REPLY_SPLITTER_RE.search(s)
     return s[:m.start()].strip() if m else s
 
-def _squash_whitespace(s: str) -> str:
-    s = re.sub(r'[ \t]+', ' ', s)
-    s = re.sub(r'\n{3,}', '\n\n', s)
-    return s.strip()
-
-def _cap_repeated_chars(s: str, max_repeat: int = 2) -> str:
-    return re.sub(r'(.)\1{' + str(max_repeat) + r',}', r'\1' * max_repeat, s)
-
-def _basic_stem(tok: str) -> str:
-    for suf in ('ing','edly','edly','ed','ly','es','s'):
-        if tok.endswith(suf) and len(tok) > len(suf) + 2:
-            return tok[:-len(suf)]
-    return tok
-
 def clean_text(
     text: str,
     *,
-    remove_stopwords: bool = False,
-    stem: bool = False,
+    remove_stopwords: bool = False,  # OFF by default
+    stem: bool = False,              # OFF by default
     drop_long_tokens: int = 30
 ) -> str:
     if not isinstance(text, str):
         text = str(text or "")
     text = _normalize_unicode(text)
     text = _strip_html_tags(text)
-    text = _deobfuscate(text)
     text = _strip_reply_blocks(text)
-    text = _mask_patterns(text)
-    text = _cap_repeated_chars(text)
+    text = _mask_patterns(text)  # includes safe email reconstruction
     text = text.lower()
     raw_tokens = [t for t in re.split(r'\W+', text) if t]
     pruned: List[str] = []
@@ -187,14 +174,20 @@ def clean_text(
             continue
         if remove_stopwords and t in _STOPWORDS:
             continue
-        pruned.append(_basic_stem(t) if stem else t)
+        if stem:
+            for suf in ('ing','edly','ed','ly','es','s'):
+                if t.endswith(suf) and len(t) > len(suf) + 2:
+                    t = t[:-len(suf)]
+                    break
+        pruned.append(t)
     return ' '.join(pruned)
+
 # =================================================================
-# >>>>>>>>>>>>>>>>>>>>>  END CLEANING LAYER  <<<<<<<<<<<<<<<<<<<<<<<
+# >>>>>>>>>>>>>>>>>>>>>  END CLEANING LAYER  (revised) <<<<<<<<<<<<
 # =================================================================
 
 def simple_tokenize(text: str):
-    # route tokenisation through the cleaner
+    # Route tokenisation through the cleaner
     cleaned = clean_text(text)   # toggles set in main() when we pre-clean df["body"]
     return [t for t in re.split(r"\W+", cleaned) if t]
 
@@ -232,7 +225,6 @@ class SimpleTextClassifier(nn.Module):
         )
 
     def forward(self, x):
-        # x: [B, L]
         emb = self.emb(x)         # [B, L, D]
         mask = (x != 0).float()   # [B, L]  (0 = pad)
         lengths = torch.clamp(mask.sum(dim=1, keepdim=True), min=1.0)
@@ -288,7 +280,7 @@ def main():
     ap.add_argument("--min_freq", type=int, default=2)
     ap.add_argument("--emb_dim", type=int, default=128)
 
-    # cleaning toggles
+    # cleaning toggles (remain OFF unless you pass flags)
     ap.add_argument("--remove_stopwords", action="store_true",
                     help="Remove a small English stopword list during cleaning.")
     ap.add_argument("--stem_tokens", action="store_true",
@@ -317,9 +309,16 @@ def main():
     train_df = apply_clean(train_df)
     test_df  = apply_clean(test_df)
 
-    # --- Normalize labels on BOTH datasets (handles 0/1 vs 'legitimate'/'phishing') ---
+    # --- Normalize labels on BOTH datasets ---
     train_df["label"] = normalize_label_series(train_df["label"])
     test_df["label"]  = normalize_label_series(test_df["label"])
+
+    # --- Save cleaned CSVs ---
+    clean_train_path = os.path.join(args.out_dir, "train_clean.csv")
+    clean_test_path  = os.path.join(args.out_dir, "test_clean.csv")
+    train_df[["body", "label"]].to_csv(clean_train_path, index=False, encoding="utf-8")
+    test_df[["body", "label"]].to_csv(clean_test_path,  index=False, encoding="utf-8")
+    print(f"Saved cleaned CSVs to:\n  {clean_train_path}\n  {clean_test_path}")
 
     # --- Build label map from the UNION of labels (train + test) ---
     all_labels = pd.concat([train_df["label"], test_df["label"]], axis=0)
@@ -369,8 +368,13 @@ def main():
         json.dump(vocab, f, ensure_ascii=False)
     with open(os.path.join(args.out_dir, "labels.json"), "w", encoding="utf-8") as f:
         json.dump({str(k): int(v) if isinstance(v, (int, np.integer)) else v for k, v in label2id.items()}, f)
-    meta = {"max_len": args.max_len, "emb_dim": args.emb_dim, "min_freq": args.min_freq,
-            "remove_stopwords": args.remove_stopwords, "stem_tokens": args.stem_tokens}
+    meta = {
+        "max_len": args.max_len,
+        "emb_dim": args.emb_dim,
+        "min_freq": args.min_freq,
+        "remove_stopwords": args.remove_stopwords,
+        "stem_tokens": args.stem_tokens
+    }
     with open(os.path.join(args.out_dir, "meta.json"), "w") as f:
         json.dump(meta, f)
 
