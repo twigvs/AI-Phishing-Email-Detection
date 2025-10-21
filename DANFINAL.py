@@ -1,24 +1,24 @@
-# pip install torch pandas scikit-learn transformers
-import argparse, json, re, os, random, html, unicodedata
-from typing import List, Tuple
+# pip install torch pandas scikit-learn numpy
+import argparse, json, re, os, random, html, unicodedata, pathlib
+from typing import List, Tuple, Dict
 import pandas as pd
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 from sklearn.metrics import classification_report, f1_score
 from sklearn.model_selection import train_test_split
-from urllib.parse import urlparse
 
 # ================================================================
-# Utils
+# Repro
 # ================================================================
 SEED = 42
 random.seed(SEED); np.random.seed(SEED); torch.manual_seed(SEED)
-if torch.cuda.is_available():
-    torch.cuda.manual_seed_all(SEED)
+if torch.cuda.is_available(): torch.cuda.manual_seed_all(SEED)
 
+# ================================================================
+# CSV IO
+# ================================================================
 def read_csv(path):
     df = pd.read_csv(path, encoding="latin1")
     if "body" not in df.columns or "label" not in df.columns:
@@ -26,74 +26,59 @@ def read_csv(path):
     df = df[["body", "label"]].dropna()
     return df
 
-def build_label_map(series):
-    if pd.api.types.is_numeric_dtype(series):
-        uniq = sorted(series.astype(int).unique().tolist())
-    else:
-        uniq = sorted(series.astype(str).unique().tolist())
-    return {lbl: i for i, lbl in enumerate(uniq)}
-
-def encode_labels(series, label2id):
-    return series.map(
-        lambda x: label2id[int(x)] if (isinstance(x, (int, np.integer)) and int(x) in label2id)
-        else label2id[str(x)]
-    )
-
-def build_vocab(texts, min_freq=2, max_size=50000):
-    PAD, UNK = "<pad>", "<unk>"
-    freq = {}
-    for txt in texts:
-        for tok in simple_tokenize(txt):
-            freq[tok] = freq.get(tok, 0) + 1
-    items = sorted([(t, c) for t, c in freq.items() if c >= min_freq], key=lambda x: (-x[1], x[0]))
-    items = items[: max(0, max_size - 2)]
-    vocab = {PAD: 0, UNK: 1}
-    for t, _ in items:
-        vocab[t] = len(vocab)
-    return vocab
-
-def encode_text(text, vocab, max_len):
-    PAD_ID, UNK_ID = 0, 1
-    toks = simple_tokenize(text)[:max_len]
-    ids = [vocab.get(t, UNK_ID) for t in toks]
-    if len(ids) < max_len:
-        ids += [PAD_ID] * (max_len - len(ids))
-    return ids
+# ================================================================
+# Label normalization
+# ================================================================
+PHISH_POS = {"phish","phishing","spam","malicious","fraud","scam","bad","1","true","yes"}
+LEGIT_NEG = {"legit","legitimate","ham","benign","clean","safe","good","0","false","no"}
 
 def normalize_label_value(v):
     if isinstance(v, (int, np.integer, float, np.floating)):
         return "phishing" if int(v) != 0 else "legitimate"
     s = str(v).strip().lower()
-    if s in {"phish","phishing","spam","malicious","fraud","scam","bad"}: return "phishing"
-    if s in {"legit","legitimate","ham","benign","clean","safe","good"}: return "legitimate"
-    if s in {"1","true","yes"}: return "phishing"
-    if s in {"0","false","no"}: return "legitimate"
-    return s
+    if s in PHISH_POS: return "phishing"
+    if s in LEGIT_NEG: return "legitimate"
+    try:
+        return "phishing" if int(float(s)) != 0 else "legitimate"
+    except Exception:
+        return s
 
 def normalize_label_series(series: pd.Series) -> pd.Series:
     return series.apply(normalize_label_value)
 
-# =================================================================
-# CLEANING LAYER
-# =================================================================
-_URL_RE   = re.compile(r'\b((?:https?://|www\.)\S+)\b', re.IGNORECASE)
-_EMAIL_MASK_RE = re.compile(r'\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b')
-_PHONE_RE = re.compile(r'\b(?:\+?\d{1,3}[\s-]?)?(?:\(?\d{2,4}\)?[\s-]?){2,4}\d{2,4}\b')
-_MONEY_RE = re.compile(r'(?:(?<=\s)|^)(?:[\$£€]\s?\d[\d,]*(?:\.\d+)?|\d[\d,]*(?:\.\d+)?\s?(?:usd|aud|eur|gbp))(?=\s|$)', re.IGNORECASE)
-_NUM_RE   = re.compile(r'\b\d+(?:[\.,]\d+)?\b')
+def build_label_map(series):
+    uniq = sorted(series.astype(str).unique().tolist())
+    return {lbl: i for i, lbl in enumerate(uniq)}
 
-_AT_VARIANTS  = r'(?:@|\(at\)|\[at\]|\s+@\s+|\s*\(at\)\s*|\s*\[at\]\s*)'
-_DOT_VARIANTS = r'(?:\.|\(dot\)|\[dot\]|\s*\.\s*|\s*\(dot\)\s*|\s*\[dot\]\s*|\s+dot\s+)'
+def encode_labels(series, label2id):
+    return series.map(lambda x: label2id[str(x)])
+
+# ================================================================
+# Cleaning layer (LIGHT defaults; safe regex usage)
+# ================================================================
+_URL_RE   = re.compile(r'\b((?:https?://|www\.)\S+)\b', re.IGNORECASE)
+_EMAIL_RE = re.compile(r'\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b')
+_NUM_RE   = re.compile(r'\b\d[\d,.\-/_]*\b')
+_MONEY_RE = re.compile(r'(?:(?<=\s)|^)(?:[\$£€]\s?\d[\d,]*(?:\.\d+)?|\d[\d,]*(?:\.\d+)?\s?(?:usd|aud|eur|gbp))(?=\s|$)', re.IGNORECASE)
+
+# Obfuscation variants (underscore names are important)
+_ATV  = r'(?:@|\(at\)|\[at\]|\s*@\s*|\s*\(at\)\s*|\s*\[at\]\s*)'
+_DOTV = r'(?:\.|\(dot\)|\[dot\]|\s*\.\s*|\s*\(dot\)\s*|\s*\[dot\]\s*|\s+dot\s+)'
 
 _OBFUSC_EMAIL_RE = re.compile(
-    r'\b([A-Za-z0-9._%+-]+)\s*' + _AT_VARIANTS + r'\s*' +
-    r'([A-Za-z0-9-]+(?:\s*' + _DOT_VARIANTS + r'\s*[A-Za-z0-9-]+)*)'
-    r'\b', re.IGNORECASE
+    r'\b([A-Za-z0-9._%+-]+)\s*' + _ATV + r'\s*' +
+    r'([A-Za-z0-9-]+(?:\s*' + _DOTV + r'\s*[A-Za-z0-9-]+)*)\b',
+    re.IGNORECASE
 )
 
+# Reply splitters (no inline (?i) flags inside; compile with IGNORECASE|MULTILINE)
 _REPLY_SPLITTERS = [
-    r'^>+ .*', r'^On .+ wrote:\s*$', r'^-{2,}\s*Original Message\s*-{2,}\s*$',
-    r'^From:\s.*$', r'^Sent:\s.*$', r'^Subject:\s.*$',
+    r'^>+ .*',
+    r'^On .+ wrote:\s*$',
+    r'^-{2,}\s*Original Message\s*-{2,}\s*$',
+    r'^From:\s.*$',
+    r'^Sent:\s.*$',
+    r'^Subject:\s.*$',
 ]
 _REPLY_SPLITTER_RE = re.compile('|'.join(_REPLY_SPLITTERS), re.IGNORECASE | re.MULTILINE)
 
@@ -103,15 +88,8 @@ _STOPWORDS = {
     "i","you","he","she","we","they","me","him","her","them","my","your","our","their","so"
 }
 
-_BRAND_HINTS = {
-    "paypal","apple","microsoft","google","outlook","office365","amazon",
-    "anz","nab","commbank","westpac","cba","dhl","fedex","ups","bank",
-    "netflix","facebook","instagram","linkedin","mygov","ato","irs"
-}
-_PATH_HINTS = {"login","verify","reset","password","invoice","update","confirm","secure"}
-
 def _normalize_unicode(s: str) -> str:
-    s = unicodedata.normalize("NFKC", s)
+    s = unicodedata.normalize("NFKC", str(s))
     return ''.join(ch for ch in s if (ch.isprintable() or ch in '\n\t '))
 
 def _strip_html_tags(s: str) -> str:
@@ -120,112 +98,84 @@ def _strip_html_tags(s: str) -> str:
     s = re.sub(r'<[^>]+>', ' ', s)
     return s
 
-def _reconstruct_obfuscated_emails(s: str) -> str:
-    def _normalize_domain(dom: str) -> str:
-        parts = re.split(_DOT_VARIANTS, dom)
-        parts = [p.strip().strip('.- ') for p in parts if p.strip()]
-        return '.'.join(parts)
-    def _sub(m: re.Match) -> str:
-        local = m.group(1)
-        domain = _normalize_domain(m.group(2))
-        return f'{local}@{domain}'
-    return _OBFUSC_EMAIL_RE.sub(_sub, s)
-
-def _replace_url_with_features(keep_numbers: bool):
-    def inner(m: re.Match) -> str:
-        url = m.group(1)
-        try:
-            p = urlparse(url if "://" in url else "http://" + url)
-            host = (p.netloc or "").lower()
-            path = (p.path or "").lower()
-        except Exception:
-            host, path = "", ""
-        tokens = ["<url>"]
-        if host:
-            tokens.append(f"domain:{host}")
-            parts = host.split(".")
-            if len(parts) >= 2:
-                tokens.append(f"tld:{parts[-1]}")
-            for b in _BRAND_HINTS:
-                if b in host:
-                    tokens.append(f"brand:{b}")
-        if path:
-            for h in _PATH_HINTS:
-                if f"/{h}" in path or path.startswith(h):
-                    tokens.append(f"path:{h}")
-        if keep_numbers:
-            for m2 in re.finditer(r'\b\d{2,6}\b', url):
-                tokens.append(f"numtok:{m2.group(0)}")
-        return " " + " ".join(tokens) + " "
-    return inner
-
-def _mask_patterns(s: str, *, keep_numbers: bool) -> str:
-    s = _reconstruct_obfuscated_emails(s)
-    s = _URL_RE.sub(_replace_url_with_features(keep_numbers), s)
-    s = _EMAIL_MASK_RE.sub(' <email> ', s)
-    s = _MONEY_RE.sub(' <money> ', s)
-    if not keep_numbers:
-        s = _PHONE_RE.sub(' <phone> ', s)
-        s = _NUM_RE.sub(' <number> ', s)
-    return s
-
 def _strip_reply_blocks(s: str) -> str:
     m = _REPLY_SPLITTER_RE.search(s)
     return s[:m.start()].strip() if m else s
 
-def clean_text(
-    text: str,
-    *,
-    remove_stopwords: bool = False,
-    stem: bool = False,
-    drop_long_tokens: int = 30,
-    keep_numbers: bool = True,
-    keep_reply_blocks: bool = False
-) -> str:
+def _reconstruct_obfuscated_emails(s: str) -> str:
+    def _norm_domain(dom: str) -> str:
+        parts = re.split(_DOTV, dom)
+        parts = [p.strip().strip('.- ') for p in parts if p.strip()]
+        return '.'.join(parts)
+    def _sub(m: re.Match) -> str:
+        return f"{m.group(1)}@{_norm_domain(m.group(2))}"
+    return _OBFUSC_EMAIL_RE.sub(_sub, s)
+
+def clean_text(text: str, *, remove_stopwords=False, stem=False, drop_long_tokens=30) -> str:
     if not isinstance(text, str):
         text = str(text or "")
     text = _normalize_unicode(text)
     text = _strip_html_tags(text)
-    if not keep_reply_blocks:
-        text = _strip_reply_blocks(text)
-    text = _mask_patterns(text, keep_numbers=keep_numbers)
-    text = text.lower()
-    raw_tokens = [t for t in re.split(r"\W+", text) if t]
-    pruned: List[str] = []
-    for t in raw_tokens:
+    text = _reconstruct_obfuscated_emails(text)
+    text = _strip_reply_blocks(text)
+    text = _URL_RE.sub(' <url> ', text)
+    text = _EMAIL_RE.sub(' <email> ', text)
+    text = _MONEY_RE.sub(' <money> ', text)
+    text = _NUM_RE.sub(' <number> ', text)
+    text = re.sub(r"[ \t]+", " ", text).strip().lower()
+    toks = [t for t in re.split(r"\W+", text) if t]
+    out = []
+    for t in toks:
         if drop_long_tokens and len(t) > drop_long_tokens:
             continue
         if remove_stopwords and t in _STOPWORDS:
             continue
         if stem:
-            for suf in ('ing','edly','ed','ly','es','s'):
+            for suf in ("ing","edly","ed","ly","es","s"):
                 if t.endswith(suf) and len(t) > len(suf) + 2:
-                    t = t[:-len(suf)]
-                    break
-        pruned.append(t)
-    return ' '.join(pruned)
-
-def simple_tokenize(text: str):
-    return [t for t in re.split(r"\W+", text) if t]
+                    t = t[:-len(suf)]; break
+        out.append(t)
+    return " ".join(out)
 
 # ================================================================
-# Extra engineered features
+# Tokenization / vocab (+bigrams)
 # ================================================================
-def extra_features_from_text(text: str) -> List[float]:
-    urls   = text.count("<url>")
-    emails = text.count("<email>")
-    money  = text.count("<money>")
-    nums   = text.count("<number>") + text.count("numtok:")
-    caps   = sum(1 for w in text.split() if len(w) >= 3 and w.isupper())
-    brands = sum(1 for w in text.split() if w.startswith("brand:"))
-    paths  = sum(1 for w in text.split() if w.startswith("path:"))
-    
-    # Additional features
-    length = len(text.split())
-    avg_word_len = np.mean([len(w) for w in text.split()]) if text.split() else 0
-    unique_ratio = len(set(text.split())) / max(len(text.split()), 1)
-    
-    return [urls, emails, money, nums, caps, brands, paths, length, avg_word_len, unique_ratio]
+def simple_tokenize(cleaned: str) -> List[str]:
+    tokens = [t for t in re.split(r"\W+", cleaned) if t]
+    bigrams = [tokens[i] + "_" + tokens[i+1] for i in range(len(tokens)-1)]
+    return tokens + bigrams
+
+def build_vocab(texts: List[str], min_freq=2, max_size=60000) -> Dict[str,int]:
+    PAD, UNK = "<pad>", "<unk>"
+    freq: Dict[str,int] = {}
+    for txt in texts:
+        for tok in simple_tokenize(txt):
+            freq[tok] = freq.get(tok, 0) + 1
+    items = sorted([(t,c) for t,c in freq.items() if c >= min_freq], key=lambda x:(-x[1], x[0]))
+    items = items[: max(0, max_size - 2)]
+    vocab = {PAD:0, UNK:1}
+    for t,_ in items:
+        vocab[t] = len(vocab)
+    return vocab
+
+def encode_text(cleaned: str, vocab: Dict[str,int], max_len: int) -> List[int]:
+    PAD_ID, UNK_ID = 0, 1
+    toks = simple_tokenize(cleaned)[:max_len]
+    ids = [vocab.get(t, UNK_ID) for t in toks]
+    if len(ids) < max_len:
+        ids += [PAD_ID] * (max_len - len(ids))
+    return ids
+
+# ================================================================
+# Extra engineered features (cheap, high-signal)
+# ================================================================
+def extra_features_from_text(cleaned: str) -> List[float]:
+    urls   = cleaned.count("<url>")
+    emails = cleaned.count("<email>")
+    money  = cleaned.count("<money>")
+    nums   = cleaned.count("<number>")
+    caps   = sum(1 for w in cleaned.split() if len(w)>=3 and w.isupper())
+    return [urls, emails, money, nums, caps]
 
 # ================================================================
 # Dataset
@@ -233,9 +183,9 @@ def extra_features_from_text(text: str) -> List[float]:
 class TextDataset(Dataset):
     def __init__(self, df, vocab, label2id, max_len):
         self.vocab = vocab
-        self.label2id = label2id
         self.max_len = max_len
-        self.texts = df["body"].tolist()
+        self.label2id = label2id
+        self.texts = df["body"].tolist()   # already cleaned
         self.labels = encode_labels(df["label"], label2id).astype(int).tolist()
 
     def __len__(self): return len(self.texts)
@@ -247,117 +197,53 @@ class TextDataset(Dataset):
         return (ids, feats), y
 
 # ================================================================
-# Enhanced DAN Model with multiple improvements
+# DAN model
 # ================================================================
-class EnhancedDanClassifier(nn.Module):
-    def __init__(self, vocab_size, emb_dim=512, n_classes=2, dropout=0.4, feat_dim=10):
+class DanClassifier(nn.Module):
+    def __init__(self, vocab_size, emb_dim=256, n_classes=2, dropout=0.3, feat_dim=5):
         super().__init__()
-        # Larger embedding with better initialization
         self.emb = nn.Embedding(vocab_size, emb_dim, padding_idx=0)
-        nn.init.xavier_uniform_(self.emb.weight[2:])  # Skip PAD and UNK
-        
-        # Multi-head attention for better pooling
-        self.self_attn = nn.MultiheadAttention(emb_dim, num_heads=8, dropout=dropout, batch_first=True)
-        
-        # Layer normalization
-        self.ln1 = nn.LayerNorm(emb_dim)
-        self.ln2 = nn.LayerNorm(emb_dim)
-        
-        # Feature projection
-        self.feat_proj = nn.Sequential(
-            nn.Linear(feat_dim, 64),
+        self.ln = nn.LayerNorm(emb_dim)
+        self.dropout = nn.Dropout(dropout)
+        self.fc = nn.Sequential(
+            nn.Linear(emb_dim + feat_dim, 192),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(64, 128)
+            nn.Linear(192, n_classes)
         )
-        
-        # Deeper classifier with residual connections
-        self.fc1 = nn.Linear(emb_dim + 128, 512)
-        self.fc2 = nn.Linear(512, 256)
-        self.fc3 = nn.Linear(256, 128)
-        self.fc_out = nn.Linear(128, n_classes)
-        
-        self.dropout = nn.Dropout(dropout)
-        self.dropout_heavy = nn.Dropout(dropout + 0.1)
-        
+
     def forward(self, x_ids, feats):
-        # Embedding
-        emb = self.emb(x_ids)  # [B, L, D]
-        
-        # Create attention mask
-        mask = (x_ids == 0)  # True for padding
-        
-        # Self-attention for contextual pooling
-        attn_out, _ = self.self_attn(emb, emb, emb, key_padding_mask=mask)
-        attn_out = self.ln1(attn_out + emb)  # Residual connection
-        
-        # Mean pooling (ignoring padding)
-        pad_mask = (x_ids != 0).float().unsqueeze(-1)  # [B, L, 1]
-        lengths = torch.clamp(pad_mask.sum(dim=1), min=1.0)
-        mean_pooled = (attn_out * pad_mask).sum(dim=1) / lengths
-        
-        # Max pooling for salient features
-        masked_attn = attn_out.masked_fill(mask.unsqueeze(-1), float('-inf'))
-        max_pooled = masked_attn.max(dim=1)[0]
-        max_pooled = torch.where(torch.isinf(max_pooled), torch.zeros_like(max_pooled), max_pooled)
-        
-        # Combine pooling strategies
-        pooled = mean_pooled + 0.3 * max_pooled
-        pooled = self.ln2(pooled)
-        
-        # Process extra features
-        feat_emb = self.feat_proj(feats)
-        
-        # Concatenate
-        h = torch.cat([pooled, feat_emb], dim=1)
-        
-        # Deep classifier with residual connections
-        h1 = F.relu(self.fc1(self.dropout(h)))
-        h2 = F.relu(self.fc2(self.dropout_heavy(h1)))
-        h3 = F.relu(self.fc3(self.dropout(h2)))
-        
-        logits = self.fc_out(h3)
+        emb = self.emb(x_ids)                      # [B, L, D]
+        mask = (x_ids != 0).float()                # [B, L]
+        lengths = torch.clamp(mask.sum(dim=1, keepdim=True), min=1.0)
+        pooled = (emb * mask.unsqueeze(-1)).sum(dim=1) / lengths  # mean
+        pooled = self.ln(pooled)
+        h = torch.cat([pooled, feats], dim=1)
+        logits = self.fc(self.dropout(h))
         return logits
 
 # ================================================================
-# Focal Loss for handling class imbalance
+# Train / Eval
 # ================================================================
-class FocalLoss(nn.Module):
-    def __init__(self, alpha=None, gamma=2.0):
-        super().__init__()
-        self.alpha = alpha
-        self.gamma = gamma
-        
-    def forward(self, inputs, targets):
-        ce_loss = F.cross_entropy(inputs, targets, reduction='none', weight=self.alpha)
-        pt = torch.exp(-ce_loss)
-        focal_loss = ((1 - pt) ** self.gamma * ce_loss).mean()
-        return focal_loss
-
-# ================================================================
-# Train / Eval with Label Smoothing
-# ================================================================
-def train_one_epoch(model, loader, criterion, optim, device, scheduler=None, max_grad_norm=1.0):
+def train_one_epoch(model, loader, criterion, optim, device, scheduler=None, grad_clip=1.0):
     model.train()
     total, correct, total_loss = 0, 0, 0.0
     for (x_ids, feats), y in loader:
         x_ids, feats, y = x_ids.to(device), feats.to(device), y.to(device)
-        optim.zero_grad()
+        optim.zero_grad(set_to_none=True)
         logits = model(x_ids, feats)
         loss = criterion(logits, y)
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+        nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         optim.step()
-        if scheduler:
-            scheduler.step()
+        if scheduler is not None: scheduler.step()
         total_loss += loss.item() * x_ids.size(0)
-        preds = logits.argmax(dim=1)
-        correct += (preds == y).sum().item()
+        correct += (logits.argmax(1) == y).sum().item()
         total += x_ids.size(0)
     return total_loss / total, correct / total
 
 @torch.no_grad()
-def evaluate(model, loader, device, label_names) -> Tuple[float, float, str]:
+def evaluate(model, loader, device, label_names) -> Tuple[float, str, float]:
     model.eval()
     ys, ps = [], []
     for (x_ids, feats), y in loader:
@@ -366,157 +252,157 @@ def evaluate(model, loader, device, label_names) -> Tuple[float, float, str]:
         preds = logits.argmax(dim=1)
         ys.extend(y.cpu().numpy().tolist())
         ps.extend(preds.cpu().numpy().tolist())
-    macro_f1 = f1_score(ys, ps, average="macro")
     acc = (np.array(ys) == np.array(ps)).mean()
-    report = classification_report(ys, ps, target_names=label_names, digits=4, zero_division=0)
-    return acc, macro_f1, report
+    # if "phishing" exists, use it as positive; else default to class 1
+    pos_index = label_names.index("phishing") if "phishing" in label_names else 1
+    f1 = f1_score(ys, ps, average="binary", pos_label=pos_index, zero_division=0)
+    report = classification_report(ys, ps, target_names=label_names, digits=3, zero_division=0)
+    return acc, report, f1
 
 # ================================================================
 # Main
 # ================================================================
 def main():
-    ap = argparse.ArgumentParser(description="Enhanced DAN with modern deep learning techniques.")
+    ap = argparse.ArgumentParser(description="DAN DL (phishing vs non-phishing) with cleaned CSV export.")
     ap.add_argument("--train_csv", required=True)
-    ap.add_argument("--test_csv",  required=True)
-    ap.add_argument("--out_dir", default="model_out")
-    ap.add_argument("--epochs", type=int, default=30)
-    ap.add_argument("--batch_size", type=int, default=32)
-    ap.add_argument("--lr", type=float, default=2e-4)
-    ap.add_argument("--weight_decay", type=float, default=1e-4)
+    ap.add_argument("--test_csv", required=True)
+    ap.add_argument("--out_dir", default="model_out_dan")
+    ap.add_argument("--epochs", type=int, default=20)
+    ap.add_argument("--batch_size", type=int, default=64)
+    ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument("--weight_decay", type=float, default=1e-5)
     ap.add_argument("--max_len", type=int, default=400)
-    ap.add_argument("--min_freq", type=int, default=2)
-    ap.add_argument("--emb_dim", type=int, default=512)
+    ap.add_argument("--min_freq", type=int, default=1)
+    ap.add_argument("--emb_dim", type=int, default=256)
     ap.add_argument("--remove_stopwords", action="store_true")
     ap.add_argument("--stem_tokens", action="store_true")
-    ap.add_argument("--keep_numbers", action="store_true")
-    ap.add_argument("--keep_reply_blocks", action="store_true")
-    ap.add_argument("--patience", type=int, default=5)
-    ap.add_argument("--focal_gamma", type=float, default=2.0, help="Focal loss gamma")
-
+    ap.add_argument("--patience", type=int, default=3)
     args = ap.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
-    # Load and clean
-    raw_train_df = read_csv(args.train_csv)
-    raw_test_df  = read_csv(args.test_csv)
+    # --- Load & clean ---
+    raw_train = read_csv(args.train_csv)
+    raw_test  = read_csv(args.test_csv)
 
     def apply_clean(df):
         df = df.copy()
         df["body"] = df["body"].apply(lambda s: clean_text(
-            s,
-            remove_stopwords=args.remove_stopwords,
-            stem=args.stem_tokens,
-            keep_numbers=args.keep_numbers,
-            keep_reply_blocks=args.keep_reply_blocks
+            s, remove_stopwords=args.remove_stopwords, stem=args.stem_tokens
         ))
         return df
 
-    train_df = apply_clean(raw_train_df)
-    test_df  = apply_clean(raw_test_df)
+    train_df = apply_clean(raw_train)
+    test_df  = apply_clean(raw_test)
 
+    # Normalize labels
     train_df["label"] = normalize_label_series(train_df["label"])
     test_df["label"]  = normalize_label_series(test_df["label"])
 
+    # Save cleaned CSVs so you can inspect
     clean_train_path = os.path.join(args.out_dir, "train_clean.csv")
     clean_test_path  = os.path.join(args.out_dir, "test_clean.csv")
     train_df[["body","label"]].to_csv(clean_train_path, index=False, encoding="utf-8")
     test_df[["body","label"]].to_csv(clean_test_path,  index=False, encoding="utf-8")
-    print(f"Saved cleaned CSVs")
+    print(f"Saved cleaned CSVs:\n  {clean_train_path}\n  {clean_test_path}")
 
+    # Label maps (union)
     all_labels = pd.concat([train_df["label"], test_df["label"]], axis=0)
     label2id = build_label_map(all_labels)
-    id2label = {v: k for k, v in label2id.items()}
+    id2label = {v:k for k,v in label2id.items()}
     n_classes = len(label2id)
+    label_names = [id2label[i] for i in range(n_classes)]
     print(f"Labels: {label2id}")
 
-    train_df, val_df = train_test_split(
-        train_df, test_size=0.15, stratify=train_df["label"], random_state=SEED
-    )
+    # Stratified train/val
+    train_df, val_df = train_test_split(train_df, test_size=0.2, stratify=train_df["label"], random_state=SEED)
 
+    # Vocab from TRAIN ONLY
     vocab = build_vocab(train_df["body"].tolist(), min_freq=args.min_freq)
     print(f"Vocab size: {len(vocab)}")
 
+    # Datasets & loaders
     train_ds = TextDataset(train_df, vocab, label2id, max_len=args.max_len)
     val_ds   = TextDataset(val_df,   vocab, label2id, max_len=args.max_len)
     test_ds  = TextDataset(test_df,  vocab, label2id, max_len=args.max_len)
 
-    tr_counts = train_df["label"].value_counts().to_dict()
-    print("Train label counts:", tr_counts)
+    # Weighted sampler for imbalance
+    counts = train_df["label"].value_counts().to_dict()
+    sample_weights = [1.0 / counts[lbl] for lbl in train_df["label"].tolist()]
+    sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
 
-    # Class weights for focal loss
-    weights = [1.0 / tr_counts[id2label[i]] for i in range(n_classes)]
-    weights = torch.tensor(weights, dtype=torch.float, device=device)
-    weights = weights / weights.sum() * n_classes  # Normalize
-
-    train_ld = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0)
+    train_ld = DataLoader(train_ds, batch_size=args.batch_size, sampler=sampler, num_workers=0)
     val_ld   = DataLoader(val_ds,   batch_size=args.batch_size, shuffle=False, num_workers=0)
     test_ld  = DataLoader(test_ds,  batch_size=args.batch_size, shuffle=False, num_workers=0)
 
-    # Model
-    model = EnhancedDanClassifier(
-        vocab_size=len(vocab),
-        emb_dim=args.emb_dim,
-        n_classes=n_classes,
-        dropout=0.4,
-        feat_dim=10
-    ).to(device)
+    # Class weights in loss
+    cls_weights = torch.tensor([1.0 / counts[id2label[i]] for i in range(n_classes)], dtype=torch.float, device=device)
 
-    print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+    model = DanClassifier(len(vocab), emb_dim=args.emb_dim, n_classes=n_classes, dropout=0.3, feat_dim=5).to(device)
+    criterion = nn.CrossEntropyLoss(weight=cls_weights)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
-    # Focal Loss
-    criterion = FocalLoss(alpha=weights, gamma=args.focal_gamma)
+    # OneCycle LR (smooth warmup/cooldown)
+    steps_per_epoch = max(1, len(train_ld))
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        optimizer, max_lr=args.lr, steps_per_epoch=steps_per_epoch, epochs=args.epochs
+    )
 
-    # AdamW with warmup
-    optim = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    
-    # Cosine annealing scheduler
-    total_steps = len(train_ld) * args.epochs
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=total_steps, eta_min=1e-6)
-
-    best_val_f1 = 0.0
-    patience, bad = args.patience, 0
-
+    # Train w/ early stopping on val F1
+    best_f1, bad, patience = 0.0, 0, args.patience
     for ep in range(1, args.epochs + 1):
-        tr_loss, tr_acc = train_one_epoch(model, train_ld, criterion, optim, device, scheduler)
-        val_acc, val_f1, _ = evaluate(model, val_ld, device, [id2label[i] for i in range(n_classes)])
-        print(f"Epoch {ep:02d} | train_loss={tr_loss:.4f} train_acc={tr_acc:.4f} | val_acc={val_acc:.4f} val_f1={val_f1:.4f}")
+        tr_loss, tr_acc = train_one_epoch(model, train_ld, criterion, optimizer, device, scheduler=scheduler, grad_clip=1.0)
+        val_acc, _, val_f1 = evaluate(model, val_ld, device, label_names)
+        print(f"Epoch {ep:02d} | train_loss={tr_loss:.4f} acc={tr_acc:.3f} | val_acc={val_acc:.3f} f1={val_f1:.3f}")
 
-        if val_f1 >= best_val_f1:
-            best_val_f1 = val_f1; bad = 0
+        if val_f1 >= best_f1:
+            best_f1, bad = val_f1, 0
             torch.save(model.state_dict(), os.path.join(args.out_dir, "model.pt"))
-            print(f"  ✓ Best model saved (val_f1={val_f1:.4f})")
         else:
             bad += 1
             if bad >= patience:
-                print("Early stopping triggered.")
+                print("Early stopping.")
                 break
 
-    # Final eval
+    # Load best & test
     model.load_state_dict(torch.load(os.path.join(args.out_dir, "model.pt"), map_location=device))
-    acc, macro_f1, report = evaluate(model, test_ld, device, [id2label[i] for i in range(n_classes)])
-    print("\n=== TEST SET REPORT ===")
-    print(report)
-    print(f"Accuracy: {acc:.4f} | Macro-F1: {macro_f1:.4f}")
+    test_acc, test_report, test_f1 = evaluate(model, test_ld, device, label_names)
+    print("\n=== Test report ===")
+    print(test_report)
+    print(f"Test accuracy: {test_acc:.3f} | Test F1: {test_f1:.3f}")
+
+    # Save predictions CSV for inspection
+    preds_path = os.path.join(args.out_dir, "test_predictions.csv")
+    model.eval()
+    ys, ps = [], []
+    with torch.no_grad():
+        for (x_ids, feats), y in test_ld:
+            x_ids, feats = x_ids.to(device), feats.to(device)
+            logits = model(x_ids, feats)
+            ps.extend(logits.argmax(1).cpu().numpy().tolist())
+            ys.extend(y.numpy().tolist())
+    inv = {i: label_names[i] for i in range(n_classes)}
+    df_out = test_df.copy().reset_index(drop=True)
+    df_out["gold"] = [inv[i] for i in encode_labels(test_df["label"], label2id)]
+    df_out["pred"] = [inv[i] for i in ps]
+    df_out.to_csv(preds_path, index=False, encoding="utf-8")
+    print(f"Saved predictions to: {preds_path}")
 
     # Save artifacts
     with open(os.path.join(args.out_dir, "vocab.json"), "w", encoding="utf-8") as f:
         json.dump(vocab, f, ensure_ascii=False)
     with open(os.path.join(args.out_dir, "labels.json"), "w", encoding="utf-8") as f:
-        json.dump({str(k): int(v) if isinstance(v, (int, np.integer)) else v for k, v in label2id.items()}, f)
+        json.dump({k:v for k,v in build_label_map(pd.concat([train_df["label"], test_df["label"]])).items()}, f)
     meta = {
         "max_len": args.max_len, "emb_dim": args.emb_dim, "min_freq": args.min_freq,
-        "remove_stopwords": args.remove_stopwords, "stem_tokens": args.stem_tokens,
-        "keep_numbers": args.keep_numbers, "keep_reply_blocks": args.keep_reply_blocks,
         "lr": args.lr, "epochs": args.epochs, "weight_decay": args.weight_decay,
-        "patience": args.patience, "focal_gamma": args.focal_gamma
+        "patience": args.patience, "remove_stopwords": args.remove_stopwords, "stem_tokens": args.stem_tokens
     }
     with open(os.path.join(args.out_dir, "meta.json"), "w") as f:
         json.dump(meta, f)
-    
-    print(f"\nAll artifacts saved to {args.out_dir}/")
+    print(f"Artifacts saved in: {args.out_dir}")
 
 if __name__ == "__main__":
     main()
