@@ -1,15 +1,8 @@
-
-
-import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.model_selection import train_test_split
 from sklearn.svm import LinearSVC
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import precision_score, recall_score, accuracy_score, f1_score
-from sklearn import datasets, svm
-
 
 
 # Load csvs
@@ -61,7 +54,6 @@ test_df.to_csv("cleaned_test_data.csv", index=False)
 from sklearn.utils import resample
 
 # label dataframe labels
-
 legitimate_df = df[df["label"] == 0]
 phishing_df = df[df["label"] == 1]
 
