@@ -1,13 +1,15 @@
 """
-gui_pysimple.py
-
 PySimpleGUI frontend for AI-Phishing-Email-Detection repo.
 Features:
- - Enter Subject + Body (or load CSV) and get a phishing probability + label
+ - Enter Subject + Body (or load CSV) and get a phishing probability + label, should say phishing or legitimate to be user-friendly.
  - Two inference modes:
     1) API mode: POST to http://localhost:5000/predict (expects JSON {subject, body})
     2) Local mode: either HuggingFace transformer model or sklearn pickle + vectorizer
  - Simple logging and CSV batch predict save
+
+ First please run app.py on a separate PowerShell window. This enables the api.
+ Then run pygui.py to launch the UI. Please note that CSV may take some time to process, or even may crash if the file is too large.
+ Enjoy :)
 """
 
 import json
@@ -23,7 +25,7 @@ import requests
 import pandas as pd
 import numpy as np
 
-# Optional heavy deps (import only when used)
+# Optional heavy dependencies
 try:
     import torch
     from transformers import AutoTokenizer, AutoModelForSequenceClassification
@@ -39,8 +41,8 @@ except Exception:
     pickle = None
     BaseEstimator = None
 
-# ---------- Configuration (edit as needed) ----------
-API_URL = "http://localhost:5000/predict"     # API mode endpoint
+# ---------- Configuration with app.py ----------
+API_URL = "http://localhost:5000/predict"     # API mode endpoint, will reference app.py, which must be running on a seperate process
 DEFAULT_TRANSFORMER_PATH = "models/roberta"   # local HF model dir if present
 DEFAULT_SKLEARN_PICKLE = "models/model.pkl"   # fallback sklearn model path
 DEFAULT_VECTORIZER_PICKLE = "models/vectorizer.pkl"  # if using sklearn
@@ -49,14 +51,14 @@ DEFAULT_VECTORIZER_PICKLE = "models/vectorizer.pkl"  # if using sklearn
 sg.theme("DefaultNoMoreNagging")
 
 layout = [
-    [sg.Text("PySimpleGUI — Phishing Detector", font=("Helvetica", 16))],
-    [sg.Frame("Input", [
+    [sg.Text("AI Phishing Email Detector", font=("Montserrat", 18, "bold"))],
+    [sg.Frame("Suspected Phishing Input", [
         [sg.Text("Subject", size=(8,1)), sg.Input(key="-SUBJECT-", expand_x=True)],
         [sg.Text("Body", size=(8,1)), sg.Multiline(key="-BODY-", size=(80,12))],
-        [sg.Text("Or load CSV (subject,body columns):"), sg.Input(key="-CSVPATH-", enable_events=True, visible=False),
+        [sg.Text("Or load a CSV (subject,body columns):"), sg.Input(key="-CSVPATH-", enable_events=True, visible=False),
          sg.FileBrowse("Load CSV", target="-CSVPATH-", file_types=(("CSV Files","*.csv"),))],
     ])],
-    [sg.Frame("Mode & Model", [
+    [sg.Frame("Choose a Mode & Model", [
         [sg.Radio("API mode (POST to running service)", "MODE", default=True, key="-MODE_API-"),
          sg.Radio("Local transformer model (HF)", "MODE", key="-MODE_HF-"),
          sg.Radio("Local sklearn pickle", "MODE", key="-MODE_SK-")],
@@ -68,16 +70,16 @@ layout = [
     [sg.Button("Predict Single", key="-PREDICT-"), sg.Button("Batch Predict CSV", key="-PREDICT_CSV-"),
      sg.Button("Clear"), sg.Button("Exit")],
     [sg.Frame("Output", [
-        [sg.Text("Label:", size=(10,1)), sg.Text("", key="-LABEL-", font=("Helvetica",12,"bold"))],
-        [sg.Text("Score (prob phishing):", size=(18,1)), sg.Text("", key="-SCORE-")],
-        [sg.Text("Model details:"), sg.Text("", key="-MODELINFO-")],
+        [sg.Text("Label:", size=(10,1)), sg.Text("", key="-LABEL-", font=("Montserrat",12,"bold"))],
+        [sg.Text("Score (prob. 0-1):", size=(18,1)), sg.Text("", key="-SCORE-")],
+        [sg.Text("Model Details:"), sg.Text("", key="-MODELINFO-")],
         [sg.Multiline(key="-LOG-", size=(100,8), disabled=True)]
     ])]
 ]
 
-window = sg.Window("Phishing GUI", layout, resizable=True, finalize=True)
+window = sg.Window("AI Phishing Email Detector - Group 10 / ICT30016", layout, resizable=True, finalize=True)
 
-# Globals for loaded local models
+# Globals for local AI models
 hf_tokenizer = None
 hf_model = None
 sk_model = None
@@ -158,7 +160,7 @@ def sk_predict(subject: str, body: str) -> Dict:
     # try predict_proba if available
     if hasattr(sk_model, "predict_proba"):
         probs = sk_model.predict_proba(X)
-        # assume phishing class is labelled 1 or 'phishing', find index
+        # phishing class is labelled 1 or 'phishing', find index
         classes = getattr(sk_model, "classes_", None)
         if classes is not None:
             try:
@@ -208,7 +210,7 @@ while True:
     if event == "-PREDICT-":
         subject = values["-SUBJECT-"]
         body = values["-BODY-"]
-        # Run prediction in background thread to keep GUI responsive
+        # Run prediction in background to keep GUI responsive
         def do_predict():
             try:
                 if values["-MODE_API-"]:
