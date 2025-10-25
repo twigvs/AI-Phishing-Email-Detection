@@ -14,7 +14,7 @@ git clone https://github.com/twigvs/AI-Phishing-Email-Detection.git
 cd AI-Phishing-Email-Detection
 
 # 2) Create the Virtual Environment
-Please use Python 3.12, unfortunately 3.13 does not yeat support PyTorch
+Please use Python 3.12, unfortunately 3.13 does not yet support PyTorch
 
 python3.12 -m venv venv
 source venv/bin/activate    (if on MacOS or Linux)
@@ -29,14 +29,15 @@ pip install -r requirements.txt
 ## Repo layout
 ```
 phishguard/
-├─ data/
-│  ├─ raw/         # keep original data here (do NOT commit large files)
-│  └─ processed/   # cleaned/split data (small samples only)
-├─ notebooks/      # EDA and experiments (pair with Jupytext if possible)
-├─ src/            # python modules (data loading, model, train, eval)
-├─ configs/        # YAML configs (hyperparams etc.)
-├─ tests/          # unit tests
-├─ out/            # training outputs/checkpoints (gitignored)
+AI-Phishing-Email-Detection/
+├─ api/
+│  └─ app.py                # Flask API (predict + evaluate)
+├─ models/                  # (optional) local model folders (HF or sklearn)
+│  ├─ roberta/              # e.g., saved HF model (config.json, tokenizer.json, model.safetensors)
+│  ├─ model.pkl             # sklearn classifier (optional)
+│  └─ vectorizer.pkl        # sklearn vectorizer (optional)
+├─ pygui.py                 # GUI with verdict badge and gauge
+├─ requirements.txt         # (optional) pinned deps
 └─ README.md
 ```
 
