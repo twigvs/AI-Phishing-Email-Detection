@@ -84,7 +84,7 @@ y_test = test_df["label"]
 from sklearn.model_selection import GridSearchCV
 
 # Build SVM Model
-SVM = Pipeline([("tfidf", TfidfVectorizer(ngram_range=(1,2))),("SVM", LinearSVC(class_weight="balanced"))])
+SVM = Pipeline([("tfidf", TfidfVectorizer(ngram_range=(1,2))),("SVM", LinearSVC(class_weight=None))])
 
 # Set up hyperparameter grid to search
 param_grid = {
